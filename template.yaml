@@ -1,0 +1,127 @@
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: "AWS SES E-Mail Forwarding"
+
+Parameters:
+
+    Endpoint:
+        Description: "Sage maker endpoint"
+        Type: String
+        Default: "sms-spam-classifier-mxnet-2020-05-14-20-52-58-142"
+
+    SenderEmail:
+        Description: "Default recipient address for forwarding"
+        Type: String
+        Default: "ammar@mydomain.codes"
+
+
+    EmailBucketName:
+        Description: "Name of the S3 bucket with the mails"
+        Type: String
+        Default: "my-email-s3-bucket"
+
+Resources:
+    # the bucket that will hold the emails from ses
+    Bucket:
+      Type: AWS::S3::Bucket
+      DependsOn:
+        - LambdaFunction
+      Properties:
+        BucketName: !Ref EmailBucketName
+        NotificationConfiguration:
+          LambdaConfigurations:
+            - Event: s3:ObjectCreated:*
+              Function: !GetAtt LambdaFunction.Arn
+
+    # policy that allows ses to write to the bucket
+    SESBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      DependsOn:
+        - Bucket
+      Properties:
+        Bucket: !Ref EmailBucketName
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Action: 's3:PutObject'
+            Effect: Allow
+            Resource: !Sub '${Bucket.Arn}/*'
+            Principal:
+              Service:
+              - 'ses.amazonaws.com'
+            Condition:
+              StringEquals:
+                aws:Referer: !Ref 'AWS::AccountId'
+          - Action : 's3:PutObject'
+            Effect: Allow
+            Principal: '*'
+            Resource: !Sub '${Bucket.Arn}/*'
+
+
+    # IAM role for the lambda function
+    LambdaRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: 2012-10-17
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service:
+                      - lambda.amazonaws.com
+                  Action:
+                    - 'sts:AssumeRole'
+            Path: /
+            Policies:
+                - PolicyName: root
+                  PolicyDocument:
+                    Version: 2012-10-17
+                    Statement:
+                    - Effect: Allow
+                      Action:
+                        - 's3:*'
+                      Resource: '*'
+                    - Effect: Allow
+                      Action:
+                        - 'ses:*'
+                      Resource: '*'
+                    - Effect: Allow
+                      Action:
+                        - 'logs:CreateLogGroup'
+                        - 'logs:CreateLogStream'
+                        - 'logs:PutLogEvents'
+                      Resource: 'arn:aws:logs:*:*:*'
+                    - Effect: Allow
+                      Action:
+                        - 'sagemaker:*'
+                      Resource: '*'
+
+    # invoke permission for s3 calling lambda
+    LambdaInvokePermission:
+        Type: AWS::Lambda::Permission
+        Properties:
+            FunctionName: !GetAtt LambdaFunction.Arn
+            Action: 'lambda:InvokeFunction'
+            Principal: s3.amazonaws.com
+            SourceAccount: !Ref 'AWS::AccountId'
+            SourceArn: !Sub 'arn:aws:s3:::${EmailBucketName}'
+
+    # lambda function that processes the forwarding
+    LambdaFunction:
+        DependsOn:
+        - LambdaRole
+        Type: AWS::Lambda::Function
+        Properties:
+            Handler: 'index.lambda_handler'
+            Role: !GetAtt LambdaRole.Arn
+            Runtime: 'python3.7'
+            Timeout: 60
+            Environment:
+                Variables:
+                    ENDPOINT: !Ref Endpoint
+                    SENDER: !Ref SenderEmail
+            Code:
+                S3Bucket: ses-cloudformation-hw4
+                S3Key: index.zip
+            Layers:
+                     - arn:aws:lambda:us-east-1:668099181075:layer:AWSLambda-Python37-SciPy1x:12
